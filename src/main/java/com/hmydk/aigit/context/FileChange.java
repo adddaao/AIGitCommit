@@ -232,6 +232,9 @@ public class FileChange {
         return new int[]{0, 0};
     }
     
+    private static final int MAX_DIFF_LINES = 50;
+    private static final int MAX_DIFF_CHARS = 10000;
+
     private static String generateDiffContent(Change change, FileChangeType type) {
         String path = getChangePath(change);
         if (path == null) return "";
@@ -253,8 +256,15 @@ public class FileChange {
                         String content = after.getContent();
                         if (content != null) {
                             diffBuilder.append("+++ ").append(path).append("\n");
-                            for (String line : content.split("\n")) {
+                            String[] lines = content.split("\n");
+                            int linesCount = 0;
+                            for (String line : lines) {
+                                if (linesCount >= MAX_DIFF_LINES || diffBuilder.length() >= MAX_DIFF_CHARS) {
+                                    diffBuilder.append(String.format("... (truncated, %d lines hidden)\n", lines.length - linesCount));
+                                    break;
+                                }
                                 diffBuilder.append("+").append(line).append("\n");
+                                linesCount++;
                             }
                         }
                     }
@@ -266,8 +276,15 @@ public class FileChange {
                         String content = before.getContent();
                         if (content != null) {
                             diffBuilder.append("--- ").append(path).append("\n");
-                            for (String line : content.split("\n")) {
+                            String[] lines = content.split("\n");
+                            int linesCount = 0;
+                            for (String line : lines) {
+                                if (linesCount >= MAX_DIFF_LINES || diffBuilder.length() >= MAX_DIFF_CHARS) {
+                                    diffBuilder.append(String.format("... (truncated, %d lines hidden)\n", lines.length - linesCount));
+                                    break;
+                                }
                                 diffBuilder.append("-").append(line).append("\n");
+                                linesCount++;
                             }
                         }
                     }
@@ -322,8 +339,14 @@ public class FileChange {
         
         // 简化的diff算法：显示所有变更
         int maxLines = Math.max(beforeLines.length, afterLines.length);
+        int linesCount = 0;
         
         for (int i = 0; i < maxLines; i++) {
+            if (linesCount >= MAX_DIFF_LINES || diff.length() >= MAX_DIFF_CHARS) {
+                diff.append(String.format("... (truncated, %d lines hidden)\n", maxLines - i));
+                break;
+            }
+
             String beforeLine = i < beforeLines.length ? beforeLines[i] : null;
             String afterLine = i < afterLines.length ? afterLines[i] : null;
             
@@ -331,11 +354,14 @@ public class FileChange {
                 if (!beforeLine.equals(afterLine)) {
                     diff.append("-").append(beforeLine).append("\n");
                     diff.append("+").append(afterLine).append("\n");
+                    linesCount++;
                 }
             } else if (beforeLine != null) {
                 diff.append("-").append(beforeLine).append("\n");
+                linesCount++;
             } else if (afterLine != null) {
                 diff.append("+").append(afterLine).append("\n");
+                linesCount++;
             }
         }
         

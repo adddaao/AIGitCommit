@@ -28,6 +28,10 @@ import java.util.stream.Collectors;
 public class AIPromptBuilder {
     private static final Gson gson = new GsonBuilder().setPrettyPrinting().create();
     
+    // 全局字符预算（约 12k Tokens）
+    private static final int MAX_TOTAL_CHARS = 50000;
+    private int currentTotalChars = 0;
+    
     private final ContextAnalyzer.AnalysisResult analysis;
     
     /**
@@ -36,6 +40,9 @@ public class AIPromptBuilder {
      */
     @NotNull
     public String buildIntelligent(CommitContext context) {
+        // 重置计数器
+        currentTotalChars = 0;
+        
         Map<String, Object> data = new HashMap<>();
         
         // 智能分析结果
@@ -47,7 +54,7 @@ public class AIPromptBuilder {
         // 统计信息
         data.put("statistics", buildStatisticsData(context.getStatistics()));
         
-        // 分类变更信息
+        // 分类变更信息 (这里会消耗预算)
         data.put("categorized_changes", buildCategorizedChangesData(context.getChanges()));
         
         // 元数据
@@ -71,6 +78,9 @@ public class AIPromptBuilder {
     }
     
     private String buildLegacy(CommitContext context) {
+        // 重置计数器
+        currentTotalChars = 0;
+        
         Map<String, Object> data = new HashMap<>();
         
         // 项目信息
@@ -79,7 +89,7 @@ public class AIPromptBuilder {
         // 统计信息
         data.put("statistics", buildStatisticsData(context.getStatistics()));
         
-        // 变更信息
+        // 变更信息 (这里会消耗预算)
         data.put("changes", buildChangesData(context.getChanges()));
         
         // 元数据
@@ -122,6 +132,7 @@ public class AIPromptBuilder {
     @NotNull
     private Map<String, Object> buildCategorizedChangesData(List<FileChange> changes) {
         if (analysis == null) {
+            // 如果没有分析结果，直接按顺序处理所有变更
             return buildChangesData(changes).stream()
                 .collect(Collectors.toMap(
                     change -> ((Map<String, Object>) change).get("path").toString(),
@@ -134,9 +145,13 @@ public class AIPromptBuilder {
         
         for (Map.Entry<ContextAnalyzer.ChangeCategory, List<FileChange>> entry : categorized.entrySet()) {
             String categoryName = entry.getKey().name().toLowerCase();
-            List<Map<String, Object>> categoryChanges = entry.getValue().stream()
-                .map(this::buildSingleChangeData)
-                .collect(Collectors.toList());
+            List<Map<String, Object>> categoryChanges = new java.util.ArrayList<>();
+            
+            // 使用循环替代流，以便进行预算控制
+            for (FileChange change : entry.getValue()) {
+                categoryChanges.add(buildSingleChangeData(change));
+            }
+            
             categorizedData.put(categoryName, categoryChanges);
         }
         
@@ -164,11 +179,23 @@ public class AIPromptBuilder {
         return statsData;
     }
     
-    private static List<Map<String, Object>> buildChangesData(List<FileChange> changes) {
-        return changes.stream().map(AIPromptBuilder::buildSingleChangeDataStatic).collect(Collectors.toList());
+    private List<Map<String, Object>> buildChangesData(List<FileChange> changes) {
+        // 使用循环替代流，以便进行预算控制
+        // 注意：这里需要调用实例方法 buildSingleChangeData 而不是静态方法
+        List<Map<String, Object>> result = new java.util.ArrayList<>();
+        for (FileChange change : changes) {
+            result.add(buildSingleChangeData(change));
+        }
+        return result;
     }
     
+    // 该方法已废弃，改为使用实例方法 buildSingleChangeData 以支持预算控制
     private static Map<String, Object> buildSingleChangeDataStatic(FileChange change) {
+        return new AIPromptBuilder(null).buildSingleChangeData(change);
+    }
+    
+    @NotNull
+    private Map<String, Object> buildSingleChangeData(FileChange change) {
         Map<String, Object> changeData = new HashMap<>();
         changeData.put("path", change.getPath());
         changeData.put("type", change.getType().name());
@@ -181,16 +208,21 @@ public class AIPromptBuilder {
         // Linus修复：AI需要看到完整的代码变动，不只是摘要！
         // "Never break userspace" - AI就是我们的用户空间
         if (change.getDiffContent() != null && !change.getDiffContent().isEmpty()) {
-            changeData.put("diff_summary", extractDiffSummary(change.getDiffContent()));
-            changeData.put("full_diff_content", change.getDiffContent()); // 关键修复：提供完整diff
+            String diffContent = change.getDiffContent();
+            
+            // 预算控制：如果超出预算，不再添加 full_diff_content
+            if (currentTotalChars + diffContent.length() > MAX_TOTAL_CHARS) {
+                changeData.put("diff_summary", "(Diff omitted due to size limit)");
+                // 可选：添加一个标记告诉 AI 这里截断了
+                changeData.put("is_truncated", true);
+            } else {
+                changeData.put("diff_summary", extractDiffSummary(diffContent));
+                changeData.put("full_diff_content", diffContent); // 关键修复：提供完整diff
+                currentTotalChars += diffContent.length();
+            }
         }
         
         return changeData;
-    }
-    
-    @NotNull
-    private Map<String, Object> buildSingleChangeData(FileChange change) {
-        return buildSingleChangeDataStatic(change);
     }
     
     private static String extractDiffSummary(String diffContent) {
